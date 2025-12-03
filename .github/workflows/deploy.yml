@@ -1,0 +1,67 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Bot to Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        env:
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PATH: ${{ secrets.SERVER_PATH }}
+        run: |
+          ssh $SERVER_USER@$SERVER_HOST << 'EOF'
+            set -e
+
+            echo "🔄 Переходим в директорию проекта..."
+            cd ${{ secrets.SERVER_PATH }}
+
+            echo "📦 Получаем последние изменения..."
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "📦 Устанавливаем зависимости..."
+            npm ci --production
+
+            echo "🛑 Останавливаем старый процесс..."
+            pm2 stop marketing-bot || true
+
+            echo "🚀 Запускаем бота..."
+            pm2 start ecosystem.config.js --env production
+
+            echo "💾 Сохраняем конфигурацию PM2..."
+            pm2 save
+
+            echo "✅ Деплой завершен успешно!"
+          EOF
+
+      - name: Verify deployment
+        env:
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          ssh $SERVER_USER@$SERVER_HOST << 'EOF'
+            pm2 status marketing-bot
+            pm2 logs marketing-bot --lines 10 --nostream
+          EOF
