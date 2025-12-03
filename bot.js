@@ -1,22 +1,41 @@
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
+import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Получаем __dirname для ES модулей
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
 
 if (!token) {
   console.error('❌ TELEGRAM_BOT_TOKEN не найден в .env файле!');
   process.exit(1);
 }
 
+if (!supabaseUrl || !supabaseKey) {
+  console.error('❌ SUPABASE_URL или SUPABASE_KEY не найдены в .env файле!');
+  process.exit(1);
+}
+
 const bot = new TelegramBot(token, { polling: true });
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Хранилище для ответов пользователей в квизе
 const quizAnswers = {};
 
 // Хранилище для отслеживания приветствованных пользователей
 const greetedUsers = new Set();
+
+// Хранилище для отслеживания пользователей, которые уже перешли ко второму этапу
+const startedUsers = new Set();
 
 // Функция для форматирования номера телефона
 function formatPhoneNumber(phone) {
@@ -53,6 +72,88 @@ function isValidPhoneNumber(phone) {
   return cleaned.length === 11 && (cleaned.startsWith('7') || cleaned.startsWith('8'));
 }
 
+// ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ ====================
+
+// Функция для сохранения/обновления пользователя
+async function saveUser(userId, firstName, username) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .upsert({
+        id: userId,
+        first_name: firstName,
+        username: username,
+        last_interaction: new Date().toISOString(),
+        is_active: true
+      }, {
+        onConflict: 'id'
+      });
+
+    if (error) {
+      console.error('❌ Ошибка сохранения пользователя:', error);
+      return false;
+    }
+    console.log('✅ Пользователь сохранен:', userId);
+    return true;
+  } catch (err) {
+    console.error('❌ Исключение при сохранении пользователя:', err);
+    return false;
+  }
+}
+
+// Функция для сохранения результатов квиза
+async function saveQuizResult(userId, answers) {
+  try {
+    const { data, error } = await supabase
+      .from('quiz_results')
+      .insert({
+        user_id: userId,
+        question_1: answers.q1,
+        question_2: answers.q2,
+        question_3: answers.q3,
+        completed_at: new Date().toISOString()
+      })
+      .select();
+
+    if (error) {
+      console.error('❌ Ошибка сохранения результатов квиза:', error);
+      return null;
+    }
+    console.log('✅ Результаты квиза сохранены:', data[0].id);
+    return data[0].id;
+  } catch (err) {
+    console.error('❌ Исключение при сохранении квиза:', err);
+    return null;
+  }
+}
+
+// Функция для сохранения заявки на бронирование
+async function saveBookingRequest(userId, name, phone, quizResultId = null) {
+  try {
+    const { data, error } = await supabase
+      .from('booking_requests')
+      .insert({
+        user_id: userId,
+        name: name,
+        phone: phone,
+        quiz_result_id: quizResultId,
+        status: 'новая'
+      });
+
+    if (error) {
+      console.error('❌ Ошибка сохранения заявки:', error);
+      return false;
+    }
+    console.log('✅ Заявка на бронирование сохранена');
+    return true;
+  } catch (err) {
+    console.error('❌ Исключение при сохранении заявки:', err);
+    return false;
+  }
+}
+
+// ==================== КОНЕЦ ФУНКЦИЙ БД ====================
+
 // Основное меню с кнопками
 function getMainMenuKeyboard() {
   return {
@@ -66,30 +167,59 @@ function getMainMenuKeyboard() {
 }
 
 // Команда /start
-bot.onText(/\/start/, (msg) => {
+bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const firstName = msg.from.first_name || 'Друг';
+  const username = msg.from.username || null;
 
-  // Если пользователь не был приветствован, помечаем его
+  // Сохраняем пользователя в базу данных
+  await saveUser(chatId, firstName, username);
+
+  // Если пользователь уже прошел второй этап, показываем меню
+  if (startedUsers.has(chatId)) {
+    const startMessage = `
+🔙 *Главное меню*
+
+*Доступные команды:*
+
+/about - 👤 Обо мне
+/programs - 📋 Услуги
+/quiz - 🎯 Тест для подбора услуг
+/start - 🔄 Главное меню
+    `.trim();
+
+    bot.sendMessage(chatId, startMessage, {
+      parse_mode: 'Markdown',
+      reply_markup: getMainMenuKeyboard()
+    });
+    return;
+  }
+
+  // Помечаем пользователя как приветствованного
   if (!greetedUsers.has(chatId)) {
     greetedUsers.add(chatId);
   }
 
-  // Всегда показываем приветственное сообщение при /start
+  // Показываем первое приветственное сообщение
   const welcomeMessage = `
 Добрый день, ${firstName}! Для начала диалога напиши слово СТАРТ
   `.trim();
 
   // Отправка фото с приветствием
-  const photoUrl = './images/photo_5440443823147844586_y.jpg';
+  const photoPath = path.join(__dirname, 'images', 'photo_5440443823147844586_y.jpg');
 
-  bot.sendPhoto(chatId, photoUrl, {
-    caption: welcomeMessage
-  }).catch((error) => {
-    // Если фото не загрузилось, отправляем текстовое сообщение
-    console.error('Ошибка загрузки фото:', error.message);
+  try {
+    bot.sendPhoto(chatId, fs.createReadStream(photoPath), {
+      caption: welcomeMessage
+    }).catch((error) => {
+      // Если фото не загрузилось, отправляем текстовое сообщение
+      console.error('Ошибка загрузки фото:', error.message);
+      bot.sendMessage(chatId, welcomeMessage);
+    });
+  } catch (error) {
+    console.error('Ошибка чтения фото:', error.message);
     bot.sendMessage(chatId, welcomeMessage);
-  });
+  }
 });
 
 // Команда /about
@@ -378,7 +508,16 @@ bot.on('callback_query', (callbackQuery) => {
 });
 
 // Показать результат квиза
-function showQuizResult(chatId) {
+async function showQuizResult(chatId) {
+  // Сохраняем результаты квиза в базу данных
+  const answers = quizAnswers[chatId];
+  const quizResultId = await saveQuizResult(chatId, answers);
+
+  // Запоминаем ID результата квиза для последующей связи с заявкой
+  if (quizResultId) {
+    quizAnswers[chatId].quizResultId = quizResultId;
+  }
+
   const resultMessage = `
 ✅ *Тест завершен!*
 
@@ -415,7 +554,7 @@ function showQuizResult(chatId) {
 }
 
 // Обработка текстовых сообщений
-bot.on('message', (msg) => {
+bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
@@ -424,29 +563,34 @@ bot.on('message', (msg) => {
     return;
   }
 
-  // Автоматическое приветствие для новых пользователей (до /start)
+  // Автоматическое приветствие для новых пользователей (на любое первое сообщение)
   if (!greetedUsers.has(chatId) && !text.startsWith('/')) {
     greetedUsers.add(chatId);
     const firstName = msg.from.first_name || 'Друг';
+    const username = msg.from.username || null;
+
+    // Сохраняем пользователя в базу данных
+    await saveUser(chatId, firstName, username);
+
     const welcomeMessage = `
 Добрый день, ${firstName}! Для начала диалога напиши слово СТАРТ
     `.trim();
 
     // Отправка фото с приветствием
-    const photoUrl = './images/photo_5440443823147844586_y.jpg';
+    const photoPath = path.join(__dirname, 'images', 'photo_5440443823147844586_y.jpg');
 
-    bot.sendPhoto(chatId, photoUrl, {
-      caption: welcomeMessage
-    }).catch((error) => {
-      // Если фото не загрузилось, отправляем текстовое сообщение
-      console.error('Ошибка загрузки фото:', error.message);
+    try {
+      bot.sendPhoto(chatId, fs.createReadStream(photoPath), {
+        caption: welcomeMessage
+      }).catch((error) => {
+        // Если фото не загрузилось, отправляем текстовое сообщение
+        console.error('Ошибка загрузки фото:', error.message);
+        bot.sendMessage(chatId, welcomeMessage);
+      });
+    } catch (error) {
+      console.error('Ошибка чтения фото:', error.message);
       bot.sendMessage(chatId, welcomeMessage);
-    });
-    return;
-  }
-
-  // Игнорируем команды, которые обрабатываются через bot.onText
-  if (text.startsWith('/')) {
+    }
     return;
   }
 
@@ -458,10 +602,34 @@ bot.on('message', (msg) => {
     quizAnswers[chatId].stage === 'result'
   );
 
+  // Если пользователь в процессе квиза/записи и пытается использовать команды, показываем предупреждение
+  if (isInQuizProcess && text.startsWith('/') && text !== '/start') {
+    const warningMessage = `
+❌ *Внимание!*
+
+Вы начали проходить тест. Пожалуйста, завершите его, и только потом переходите в другие разделы.
+
+🎯 Ответьте на оставшиеся вопросы теста, чтобы получить персональную рекомендацию.
+    `.trim();
+
+    bot.sendMessage(chatId, warningMessage, {
+      parse_mode: 'Markdown'
+    });
+    return;
+  }
+
+  // Игнорируем команды, которые обрабатываются через bot.onText
+  if (text.startsWith('/')) {
+    return;
+  }
+
   // Если пользователь НЕ в процессе квиза/записи, обрабатываем кнопки меню
   if (!isInQuizProcess) {
-    // Обработка команды СТАРТ
-    if (text.toUpperCase() === 'СТАРТ') {
+    // Если пользователь был поприветствован, но еще не перешел ко второму этапу
+    // Показываем второй этап ТОЛЬКО на слово "СТАРТ"
+    if (greetedUsers.has(chatId) && !startedUsers.has(chatId) && text.toUpperCase() === 'СТАРТ') {
+      startedUsers.add(chatId);
+
       const firstName = msg.from.first_name || 'Друг';
       const startMessage = `
 👋 *Привет, ${firstName}!*
@@ -480,24 +648,37 @@ bot.on('message', (msg) => {
       `.trim();
 
       // Отправка фото с приветствием
-      const photoUrl = './images/foto5.png';
+      const photoPath = path.join(__dirname, 'images', 'foto5.png');
 
-      bot.sendPhoto(chatId, photoUrl, {
-        caption: startMessage,
-        parse_mode: 'Markdown',
-        reply_markup: getMainMenuKeyboard()
-      }).catch((error) => {
-        // Если фото не загрузилось, отправляем текстовое сообщение
-        console.error('Ошибка загрузки фото:', error.message);
+      try {
+        bot.sendPhoto(chatId, fs.createReadStream(photoPath), {
+          caption: startMessage,
+          parse_mode: 'Markdown',
+          reply_markup: getMainMenuKeyboard()
+        }).catch((error) => {
+          // Если фото не загрузилось, отправляем текстовое сообщение
+          console.error('Ошибка загрузки фото:', error.message);
+          bot.sendMessage(chatId, startMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: getMainMenuKeyboard()
+          });
+        });
+      } catch (error) {
+        console.error('Ошибка чтения фото:', error.message);
         bot.sendMessage(chatId, startMessage, {
           parse_mode: 'Markdown',
           reply_markup: getMainMenuKeyboard()
         });
-      });
+      }
       return;
     }
 
-    // Обработка нажатий на кнопки меню
+    // Обработка нажатий на кнопки меню (только для пользователей, прошедших второй этап)
+    if (!startedUsers.has(chatId)) {
+      // Если пользователь еще не прошел второй этап, не обрабатываем кнопки
+      return;
+    }
+
     if (text === '👤 Обо мне') {
       const aboutMessage = `
 👤 *Маргарита Осмаева*
@@ -637,6 +818,24 @@ bot.on('message', (msg) => {
       bot.sendMessage(chatId, contactMessage, {
         parse_mode: 'Markdown',
         reply_markup: getMainMenuKeyboard()
+      });
+      return;
+    }
+  } else {
+    // Пользователь в процессе квиза/записи, но пытается нажать на кнопки меню
+    const menuButtons = ['👤 Обо мне', '📋 Услуги', '🎯 Тест для подбора услуг', '📞 Контакты'];
+
+    if (menuButtons.includes(text) || text.toUpperCase() === 'СТАРТ') {
+      const warningMessage = `
+❌ *Внимание!*
+
+Вы начали проходить тест. Пожалуйста, завершите его, и только потом переходите в другие разделы.
+
+🎯 Ответьте на оставшиеся вопросы теста, чтобы получить персональную рекомендацию.
+      `.trim();
+
+      bot.sendMessage(chatId, warningMessage, {
+        parse_mode: 'Markdown'
       });
       return;
     }
@@ -781,8 +980,12 @@ bot.on('contact', (msg) => {
 });
 
 // Отправка подтверждения записи
-function sendBookingConfirmation(chatId) {
+async function sendBookingConfirmation(chatId) {
   const userData = quizAnswers[chatId];
+
+  // Сохраняем заявку на бронирование в базу данных
+  const quizResultId = userData.quizResultId || null;
+  await saveBookingRequest(chatId, userData.name, userData.phone, quizResultId);
 
   const confirmationMessage = `
 ✅ *Заявка принята!*

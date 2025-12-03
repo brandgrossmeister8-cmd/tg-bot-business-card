@@ -6,13 +6,26 @@
   "type": "module",
   "scripts": {
     "start": "node bot.js",
-    "dev": "node --watch bot.js"
+    "dev": "node --watch bot.js",
+    "pm2:start": "pm2 start bot.js --name marketing-bot",
+    "pm2:stop": "pm2 stop marketing-bot",
+    "pm2:restart": "pm2 restart marketing-bot",
+    "pm2:status": "pm2 status",
+    "pm2:logs": "pm2 logs marketing-bot"
   },
-  "keywords": ["telegram", "bot", "marketing"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "marketing"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "node-telegram-bot-api": "^0.66.0",
-    "dotenv": "^16.4.5"
+    "@supabase/supabase-js": "^2.86.0",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "devDependencies": {
+    "pm2": "^6.0.14"
   }
 }
