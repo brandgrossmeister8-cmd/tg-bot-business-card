@@ -594,8 +594,28 @@ bot.on('callback_query', (callbackQuery) => {
 
 // Показать результат квиза
 async function showQuizResult(chatId) {
+  // Маппинг кодов ответов на тексты
+  const answerTexts = {
+    'q1_a': 'Трафик падает',
+    'q1_b': 'Низкий трафик',
+    'q1_c': 'Всё сразу',
+    'q2_a': 'Таргетированная реклама',
+    'q2_b': 'Ничего',
+    'q2_c': 'Много всего',
+    'q3_a': 'До 2 лет',
+    'q3_b': 'До 5 лет',
+    'q3_c': 'Более 6 лет'
+  };
+
+  // Преобразуем массив кодов в объект с текстами ответов
+  const answerCodes = quizAnswers[chatId].answers; // ['q1_a', 'q2_b', 'q3_c']
+  const answers = {
+    q1: answerTexts[answerCodes[0]] || answerCodes[0],
+    q2: answerTexts[answerCodes[1]] || answerCodes[1],
+    q3: answerTexts[answerCodes[2]] || answerCodes[2]
+  };
+
   // Сохраняем результаты квиза в базу данных
-  const answers = quizAnswers[chatId];
   const quizResultId = await saveQuizResult(chatId, answers);
 
   // Запоминаем ID результата квиза для последующей связи с заявкой
