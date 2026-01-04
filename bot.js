@@ -14,6 +14,7 @@ dotenv.config();
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
+const adminChatId = process.env.ADMIN_CHAT_ID;
 
 if (!token) {
   console.error('❌ TELEGRAM_BOT_TOKEN не найден в .env файле!');
@@ -149,6 +150,59 @@ async function saveBookingRequest(userId, name, phone, quizResultId = null) {
   } catch (err) {
     console.error('❌ Исключение при сохранении заявки:', err);
     return false;
+  }
+}
+
+// Функция для сохранения сообщения в БД
+async function saveMessage(userId, messageText, messageType = 'user') {
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .insert({
+        user_id: userId,
+        message_text: messageText,
+        message_type: messageType,
+        is_read: false
+      });
+
+    if (error) {
+      console.error('❌ Ошибка сохранения сообщения:', error);
+      return false;
+    }
+    console.log('✅ Сообщение сохранено в БД');
+    return true;
+  } catch (err) {
+    console.error('❌ Исключение при сохранении сообщения:', err);
+    return false;
+  }
+}
+
+// Функция для отправки уведомления админу о новом сообщении
+async function notifyAdmin(userId, firstName, username, messageText) {
+  if (!adminChatId) {
+    console.log('⚠️ ADMIN_CHAT_ID не установлен, уведомление не отправлено');
+    return;
+  }
+
+  const notification = `
+📩 *Новое сообщение от пользователя*
+
+👤 *Пользователь:* ${firstName}
+🆔 *User ID:* \`${userId}\`
+📱 *Username:* ${username ? '@' + username : 'не указан'}
+
+💬 *Сообщение:*
+${messageText}
+
+_Для ответа используйте:_
+\`/reply ${userId} ваш текст ответа\`
+  `.trim();
+
+  try {
+    await bot.sendMessage(adminChatId, notification, { parse_mode: 'Markdown' });
+    console.log('✅ Уведомление админу отправлено');
+  } catch (err) {
+    console.error('❌ Ошибка отправки уведомления админу:', err);
   }
 }
 
@@ -351,6 +405,37 @@ bot.onText(/\/contact/, (msg) => {
     parse_mode: 'Markdown',
     reply_markup: getMainMenuKeyboard()
   });
+});
+
+// Команда /reply - ответ клиенту (только для админа)
+bot.onText(/\/reply (\d+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+
+  // Проверяем, что команду использует админ
+  if (adminChatId && chatId.toString() !== adminChatId.toString()) {
+    bot.sendMessage(chatId, '❌ У вас нет доступа к этой команде.');
+    return;
+  }
+
+  const targetUserId = match[1];
+  const replyText = match[2];
+
+  try {
+    // Отправляем сообщение пользователю
+    await bot.sendMessage(targetUserId, `📬 *Ответ от Маргариты:*\n\n${replyText}`, {
+      parse_mode: 'Markdown'
+    });
+
+    // Сохраняем ответ в БД
+    await saveMessage(targetUserId, replyText, 'admin');
+
+    // Подтверждение админу
+    bot.sendMessage(chatId, `✅ Сообщение отправлено пользователю ${targetUserId}`);
+    console.log(`✅ Ответ отправлен пользователю ${targetUserId}`);
+  } catch (err) {
+    console.error('❌ Ошибка отправки ответа:', err);
+    bot.sendMessage(chatId, `❌ Ошибка отправки сообщения: ${err.message}`);
+  }
 });
 
 // Команда /quiz - тест для подбора программы
@@ -889,6 +974,16 @@ bot.on('message', async (msg) => {
   // Обработка прочих текстовых сообщений (только если НЕ в процессе квиза)
   if (!isInQuizProcess) {
     const lowerText = text.toLowerCase();
+
+    // Сохраняем сообщение от пользователя в БД
+    await saveMessage(chatId, text, 'user');
+
+    // Отправляем уведомление админу (только если не команда и не кнопка меню)
+    if (!text.startsWith('/') && !['👤 обо мне', '📋 услуги', '🎯 тест для подбора услуг', '📞 контакты'].includes(lowerText)) {
+      const firstName = msg.from.first_name || 'Пользователь';
+      const username = msg.from.username || null;
+      await notifyAdmin(chatId, firstName, username, text);
+    }
 
     // Обработка вопросов о цене/стоимости
     if (lowerText.includes('цена') || lowerText.includes('стоимость') ||
