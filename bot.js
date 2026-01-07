@@ -78,6 +78,7 @@ function isValidPhoneNumber(phone) {
 // Функция для сохранения/обновления пользователя
 async function saveUser(userId, firstName, username) {
   try {
+    console.log('🔄 Попытка сохранить пользователя:', { userId, firstName, username });
     const { data, error } = await supabase
       .from('users')
       .upsert({
@@ -92,12 +93,14 @@ async function saveUser(userId, firstName, username) {
 
     if (error) {
       console.error('❌ Ошибка сохранения пользователя:', error);
+      console.error('❌ Детали ошибки:', JSON.stringify(error, null, 2));
       return false;
     }
     console.log('✅ Пользователь сохранен:', userId);
     return true;
   } catch (err) {
     console.error('❌ Исключение при сохранении пользователя:', err);
+    console.error('❌ Стек ошибки:', err.stack);
     return false;
   }
 }
@@ -105,8 +108,9 @@ async function saveUser(userId, firstName, username) {
 // Функция для сохранения результатов квиза
 async function saveQuizResult(userId, answers) {
   try {
+    console.log('🔄 Попытка сохранить результаты квиза:', { userId, answers });
     const { data, error } = await supabase
-      .from('quiz_results')
+      .from('marketing_bot_quiz_results')
       .insert({
         user_id: userId,
         question_1: answers.q1,
@@ -118,12 +122,14 @@ async function saveQuizResult(userId, answers) {
 
     if (error) {
       console.error('❌ Ошибка сохранения результатов квиза:', error);
+      console.error('❌ Детали ошибки:', JSON.stringify(error, null, 2));
       return null;
     }
     console.log('✅ Результаты квиза сохранены:', data[0].id);
     return data[0].id;
   } catch (err) {
     console.error('❌ Исключение при сохранении квиза:', err);
+    console.error('❌ Стек ошибки:', err.stack);
     return null;
   }
 }
@@ -131,8 +137,9 @@ async function saveQuizResult(userId, answers) {
 // Функция для сохранения заявки на бронирование
 async function saveBookingRequest(userId, name, phone, quizResultId = null) {
   try {
+    console.log('🔄 Попытка сохранить заявку:', { userId, name, phone, quizResultId });
     const { data, error } = await supabase
-      .from('booking_requests')
+      .from('marketing_bot_booking_requests')
       .insert({
         user_id: userId,
         name: name,
@@ -143,12 +150,14 @@ async function saveBookingRequest(userId, name, phone, quizResultId = null) {
 
     if (error) {
       console.error('❌ Ошибка сохранения заявки:', error);
+      console.error('❌ Детали ошибки:', JSON.stringify(error, null, 2));
       return false;
     }
     console.log('✅ Заявка на бронирование сохранена');
     return true;
   } catch (err) {
     console.error('❌ Исключение при сохранении заявки:', err);
+    console.error('❌ Стек ошибки:', err.stack);
     return false;
   }
 }
@@ -157,7 +166,7 @@ async function saveBookingRequest(userId, name, phone, quizResultId = null) {
 async function saveMessage(userId, messageText, messageType = 'user') {
   try {
     const { data, error } = await supabase
-      .from('messages')
+      .from('marketing_bot_messages')
       .insert({
         user_id: userId,
         message_text: messageText,
